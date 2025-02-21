@@ -14,7 +14,7 @@ class ConversationService():
         # 转换为字典列表
         conversations_data = [
             {
-                "id": conversation.id,
+                "battle_conversation_id": conversation.id,
                 "name": conversation.name,
                 "created_at": conversation.created_at.isoformat(),
                 "updated_at": conversation.updated_at.isoformat()
@@ -23,14 +23,14 @@ class ConversationService():
         ]
         return conversations_data
     
-    def delete(self, conversation_id):
+    def delete(self, battle_conversation_id):
         """
         逻辑删除指定 ID 的对话记录
         :param conversation_id: 对话记录的 ID
         :return: 是否删除成功
         """
         # 查询指定 ID 的记录
-        conversation = db.session.get(Conversation, conversation_id)
+        conversation = db.session.get(Conversation, battle_conversation_id)
 
         if not conversation:
             # 如果记录不存在，返回 False 或抛出异常
@@ -47,6 +47,43 @@ class ConversationService():
             # 如果提交失败，回滚事务
             db.session.rollback()
             print(f"Error during logical delete: {e}")
+            return False
+        
+    def rename(self, battle_conversation_id, new_name):
+        """
+        更新指定 ID 的对话记录的名称
+        :param battle_conversation_id: 对话记录的 ID
+        :param new_name: 新的对话名称
+        :return: 是否更新成功
+        """
+        # 查询指定 ID 的记录
+        # 查询指定 ID 且未被删除的记录
+        query = select(Conversation).where(
+            Conversation.id == battle_conversation_id,
+            Conversation.is_deleted == False
+        )
+        conversation = db.session.execute(query).scalar_one_or_none()
+
+        if not conversation:
+            # 如果记录不存在，返回 False 或抛出异常
+            return False
+
+        # 检查新名称是否为空或无效
+        if not new_name or not isinstance(new_name, str):
+            print("Invalid new name provided.")
+            return False
+
+        # 更新对话记录的名称
+        conversation.name = new_name
+
+        try:
+            # 提交事务
+            db.session.commit()
+            return True
+        except Exception as e:
+            # 如果提交失败，回滚事务
+            db.session.rollback()
+            print(f"Error during renaming: {e}")
             return False
         
     @staticmethod

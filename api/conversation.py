@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 import requests
 from model.models import db,Conversation
+import time
 
 #获取会话列表
 @api.route('/conversations', methods=['GET'])
@@ -36,6 +37,25 @@ def delete_conversation(battle_conversation_id):
     else:
         return jsonify({"error": "Conversation not found"}), 404
 
+#重命名会话
+@api.route('/conversations/<battle_conversation_id>/rename', methods=['POST'])
+def rename(battle_conversation_id):
+    # 从请求体中获取新的名称
+    data = request.get_json()
+    new_name = data.get("new_name")
+
+    if not new_name or not isinstance(new_name, str):
+        return jsonify({"error": "Invalid or missing 'new_name' in request body"}), 400
+
+    # 调用服务层的 rename 方法
+    conversation_service = ConversationService()
+    success = conversation_service.rename(battle_conversation_id, new_name)
+
+    if success:
+        return jsonify({"message": "Conversation renamed successfully"}), 200
+    else:
+        return jsonify({"error": "Conversation not found"}), 404
+    
 
 #获取单个会话的历史聊天记录
 @api.route('/messages', methods=['GET'])
@@ -85,10 +105,44 @@ def messages():
             # 检查响应状态码
             if response.status_code == 200:
                 # 解析 JSON 数据
-                messages = response.json()
-                all_messages.append({
-                    f"id{i}_messages": messages
-                })
+                data = response.json().get("data", [])
+                #data中的answer中如果有<think></think>的话，需要拆分将这个标签内的数据切到一个新的字段:think_content
+                # 遍历每条消息，处理 answer 字段中的 <think> 标签
+                for message in data:
+                    # 分离思考和回复
+                    answer = message.get("answer", "")
+                    if "<think>" in answer and "</think>" in answer:
+                        # 提取 <think> 标签内的内容
+                        think_start = answer.find("<think>") + len("<think>")
+                        think_end = answer.find("</think>")
+                        think_content = answer[think_start:think_end].strip()
+                        
+                        # 提取 </think> 之后的内容
+                        answer_after_think = answer[think_end + len("</think>"):].strip()
+                        
+                        # 更新 message 字段
+                        message["think_content"] = None if think_content=="\n" or think_content=="\n\n" else think_content
+                        message["answer"] = answer_after_think
+                        message["stage"]=i
+                    else:
+                        message["think_content"] =None
+                    message_files=message.get("message_files", [])
+                    # 精简文件信息
+                    filtered_message_files = []
+                    for message_file in message_files:
+                        # 构造新的精简字段
+                        filtered_message_files.append({
+                            "filename": message_file.get("filename"),
+                            "id": message_file.get("id"),
+                            "size": message_file.get("size")
+                        })
+                    message["message_files"] = filtered_message_files
+                    # 移除字段
+                    fields_to_del=["error","feedback","retriever_resources","status","agent_thoughts"]
+                    for field_to_del in fields_to_del:
+                        if field_to_del in message:
+                            del message[field_to_del]
+                all_messages.extend(data)  # 将数据直接加入 all_messages
             else:
                 print(f"Failed to fetch messages for id{i}: {response.status_code}")
         except Exception as e:
@@ -135,7 +189,24 @@ def chat():
     data = request.json
     query = data.get('query')
     battle_conversation_id=data.get('battle_conversation_id')
+    #增加一个空的必须字段
+    data["response_mode"]="streaming"
+    data["inputs"]={}
+    files=data.get("files")
+    if files and files is not [] and isinstance(files[0],str):
+        new_files=[]
+        for file_id in files:
+            file={
+                "type": "document",
+                "transfer_method": "local_file",
+                "url": "",
+                "upload_file_id": file_id
+                }
+            print(file)
+            new_files.append(file)
+        data["files"]=new_files
     if battle_conversation_id=="":
+        session['user_stage'] = 1
         battle_conversation_id=str(uuid.uuid4())
     if not data:
         return {"error": "No data provided"}, 400
@@ -156,10 +227,16 @@ def chat():
         session['user_stage'] = 1
     else:
         return {"error": "Invalid stage"}, 400
-    return Response(response_data)
+
+    response = Response(stream_with_context(response_data), content_type='text/event-stream')
+    # 添加 Cache-Control 和 Connection 头部
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    return response
 
 #1. 想定内容提取与对话
 def extract(data, battle_conversation_id):
+    start_time=time.time()
     url = "http://123.57.244.236:35001//console/api/installed-apps/0e1144c1-658d-4b33-a180-939d92cd6008/chat-messages"
     # 发送 POST 请求
     response = requests.post(url, json=data, verify=False, stream=True)
@@ -169,11 +246,12 @@ def extract(data, battle_conversation_id):
         return {"error": "Failed to forward request", "status_code": response.status_code}, 500
 
     # 返回流式响应
-    return generate(response, battle_conversation_id, 1, current_app._get_current_object())
+    return generate(response, battle_conversation_id, 1, current_app._get_current_object(),start_time)
 
 
 #2. 总体作战目标
 def goal(data,battle_conversation_id):
+    start_time=time.time()
     url = "http://123.57.244.236:35001//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/chat-messages"
     # 发送 POST 请求
     response = requests.post(url, json=data, verify=False,stream=True)
@@ -181,10 +259,11 @@ def goal(data,battle_conversation_id):
     if response.status_code != 200:
         return {"error": "Failed to forward request", "status_code": response.status_code}, 500
     # 返回流式响应
-    return generate(response,battle_conversation_id,2, current_app._get_current_object())
+    return generate(response,battle_conversation_id,2, current_app._get_current_object(),start_time)
 
 #3. 作战任务筹划
 def task(data,battle_conversation_id):
+    start_time=time.time()
     url = "http://123.57.244.236:35001//console/api/installed-apps/b09fdf1b-e143-4ab1-866a-6dbce4f35392/chat-messages"
     # 发送 POST 请求
     response = requests.post(url, json=data, verify=False,stream=True)
@@ -192,11 +271,12 @@ def task(data,battle_conversation_id):
     if response.status_code != 200:
         return {"error": "Failed to forward request", "status_code": response.status_code}, 500
     # 返回流式响应
-    return generate(response,battle_conversation_id,3, current_app._get_current_object())
+    return generate(response,battle_conversation_id,3, current_app._get_current_object(),start_time)
 
 
 #4. 作战行动方案
 def solution(data,battle_conversation_id):
+    start_time=time.time()
     url = "http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/chat-messages"
     # 发送 POST 请求
     response = requests.post(url, json=data, verify=False,stream=True)
@@ -204,12 +284,14 @@ def solution(data,battle_conversation_id):
     if response.status_code != 200:
         return {"error": "Failed to forward request", "status_code": response.status_code}, 500
     # 返回流式响应
-    return generate(response,battle_conversation_id,4, current_app._get_current_object())
+    return generate(response,battle_conversation_id,4, current_app._get_current_object(),start_time)
 
 #加工来自至慧工作流的响应
-def generate(response, battle_conversation_id, stage, app):
+
+def generate(response, battle_conversation_id, stage, app, start_time):
     buffer = ""
-    first_conversation_id_found = False  # 标志变量，用于记录是否已处理过 conversation_id
+    first_conversation_id_found = False
+    is_think_content = False
 
     for chunk in response.iter_content(chunk_size=1024):
         if chunk:
@@ -218,43 +300,71 @@ def generate(response, battle_conversation_id, stage, app):
                 decoded_chunk = chunk.decode('utf-8')
                 buffer += decoded_chunk
 
-                # 按行分割数据块
-                lines = buffer.split('\n')
-                buffer = lines.pop()  # 最后一行可能是不完整的，留作下一次处理
+                # 检查缓冲区中是否有完整的 JSON 对象
+                while buffer:
+                    # 查找第一个完整的 JSON 对象（以 "data: " 开头）
+                    start_index = buffer.find("data: {")
+                    if start_index == -1:
+                        break  # 没有找到完整的 JSON 对象，继续等待数据
 
-                # 处理每一行数据
-                for line in lines:
-                    if line.startswith('data: '):
-                        # 提取原始数据部分（去掉 "data: " 前缀）
-                        original_data = line[len('data: '):].strip()
+                    # 提取从 "data: {" 开始的部分
+                    buffer = buffer[start_index:]
+                    end_index = buffer.find("}\n\n")  # 查找 JSON 对象的结束位置
+                    if end_index == -1:
+                        break  # 没有找到完整的 JSON 对象，继续等待数据
 
-                        # 跳过空行或无效数据
-                        if not original_data:
-                            continue
+                    # 提取完整的 JSON 字符串
+                    json_str = buffer[:end_index + 1]
+                    buffer = buffer[end_index + 2:]  # 移除已处理的部分
 
-                        # 解析原始 JSON 数据
-                        try:
-                            parsed_data = json.loads(original_data)
-                        except json.JSONDecodeError as e:
-                            print(f"JSON 解析失败: {e}, 数据: {original_data}")
-                            continue
+                    try:
+                        # 解析 JSON 数据
+                        parsed_data = json.loads(json_str[len("data: "):])
+                    except json.JSONDecodeError as e:
+                        print(f"JSON 解析失败: {e}, 数据: {json_str}")
+                        continue
 
-                        # 提取 conversation_id
-                        conversation_id = parsed_data.get("conversation_id")
+                    # 提取 conversation_id
+                    conversation_id = parsed_data.get("conversation_id")
 
-                        if conversation_id and not first_conversation_id_found:
-                            # 如果是第一次找到 conversation_id，则调用回调函数
-                            with app.app_context():  # 使用传入的应用实例
-                                ConversationService.save_conversation_id_to_db(
-                                    battle_conversation_id, conversation_id, stage
-                                )
-                            first_conversation_id_found = True  # 设置标志变量
+                    if conversation_id and not first_conversation_id_found:
+                        # 如果是第一次找到 conversation_id，则调用回调函数
+                        with app.app_context():  # 使用传入的应用实例
+                            ConversationService.save_conversation_id_to_db(
+                                battle_conversation_id, conversation_id, stage
+                            )
+                        first_conversation_id_found = True  # 设置标志变量
 
-                        # 将 battle_conversation_id 添加到顶层
-                        parsed_data["battle_conversation_id"] = battle_conversation_id
+                    # 将 battle_conversation_id 添加到顶层
+                    parsed_data["battle_conversation_id"] = battle_conversation_id
+
+                    # 处理消息内容
+                    if parsed_data.get("event") == "message":
+                        if parsed_data.get("answer") == "<think>":
+                            is_think_content = True
+                            parsed_data["is_think_content"] = True
+                        elif parsed_data.get("answer") == "</think>":
+                            is_think_content = False
+                            parsed_data["is_think_content"] = True
+                        else:
+                            parsed_data["is_think_content"] = is_think_content
+
+                        # 计算耗时
+                        parsed_data["time_consumed"] = f"{time.time() - start_time:.1f}"
+
+                        # 精简字段
+                        parsed_data = {
+                            "event": parsed_data.get("event"),
+                            "conversation_id": parsed_data.get("conversation_id"),
+                            "message_id": parsed_data.get("message_id"),
+                            "answer": parsed_data.get("answer"),
+                            "battle_conversation_id": parsed_data.get("battle_conversation_id"),
+                            "is_think_content": parsed_data.get("is_think_content"),
+                            "time_consumed": parsed_data.get("time_consumed")
+                        }
 
                         # 转换为 JSON 字符串并加上 data: 前缀
-                        yield f"data: {json.dumps(parsed_data)}\n"
+                        yield f"data: {json.dumps(parsed_data)}\n\n"
             except UnicodeDecodeError:
                 # 如果解码失败，跳过该块
                 continue
