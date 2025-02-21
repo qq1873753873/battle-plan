@@ -85,7 +85,24 @@ class ConversationService():
             db.session.rollback()
             print(f"Error during renaming: {e}")
             return False
-        
+    
+    def get_conversation_by_id(self, battle_conversation_id):
+        """
+        根据 battle_conversation_id 查询会话记录。
+        :param battle_conversation_id: 会话的 ID
+        :return: 如果找到会话记录，则返回该记录；否则返回 None
+        """
+        # 构造查询
+        query = select(Conversation).where(
+            Conversation.id == battle_conversation_id,
+            Conversation.is_deleted == False  # 确保只查询未被删除的记录
+        )
+
+        # 执行查询并获取结果
+        result = db.session.execute(query).scalar_one_or_none()
+
+        return result
+
     @staticmethod
     def save_conversation_id_to_db(battle_conversation_id, conversation_id, stage):
         """

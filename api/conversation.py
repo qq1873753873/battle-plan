@@ -2,7 +2,7 @@ import json
 from flask_cors import cross_origin
 import uuid
 from services.conversation_service import ConversationService
-#from services.message_service import MessageService
+from services.message_service import MessageService
 from . import api  
 from flask import Response, request, jsonify, app, stream_with_context,session,current_app
 import os
@@ -72,7 +72,9 @@ def messages():
         return jsonify({"error": "Missing required parameter: battle_conversation_id"}), 400
 
     # 查询数据库中的记录
-    conversation = Conversation.query.filter_by(id=battle_conversation_id).first()
+    conversation_service = ConversationService()
+    messageService=MessageService()
+    conversation = conversation_service.get_conversation_by_id(battle_conversation_id)
     if not conversation:
         return jsonify({"error": f"No record found for battle_conversation_id: {battle_conversation_id}"}), 404
 
@@ -123,9 +125,11 @@ def messages():
                         # 更新 message 字段
                         message["think_content"] = None if think_content=="\n" or think_content=="\n\n" else think_content
                         message["answer"] = answer_after_think
-                        message["stage"]=i
                     else:
                         message["think_content"] =None
+                    #公用字段修改
+                    message["time_consumed_on_thinking"]=messageService.get_message_by_id(message.get("id")).time_consumed_on_thinking
+                    message["stage"]=i
                     message_files=message.get("message_files", [])
                     # 精简文件信息
                     filtered_message_files = []
@@ -289,10 +293,12 @@ def solution(data,battle_conversation_id):
 #加工来自至慧工作流的响应
 
 def generate(response, battle_conversation_id, stage, app, start_time):
+    messageService=MessageService()
     buffer = ""
     first_conversation_id_found = False
     is_think_content = False
-
+    is_think_message=False
+    message_is_saved=False
     for chunk in response.iter_content(chunk_size=1024):
         if chunk:
             try:
@@ -342,6 +348,7 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                     if parsed_data.get("event") == "message":
                         if parsed_data.get("answer") == "<think>":
                             is_think_content = True
+                            is_think_message=True
                             parsed_data["is_think_content"] = True
                         elif parsed_data.get("answer") == "</think>":
                             is_think_content = False
@@ -351,7 +358,15 @@ def generate(response, battle_conversation_id, stage, app, start_time):
 
                         # 计算耗时
                         parsed_data["time_consumed"] = f"{time.time() - start_time:.1f}"
-
+                        #parsed_data["time_consumed"] = round(time.time() - start_time, 1)
+                        # 是思考消息，且刚思考结束的第一次，需要保存一条消息
+                        if not message_is_saved:
+                            if is_think_message and is_think_content is False:
+                                messageService.save_messages(parsed_data.get("message_id"),is_think_message,parsed_data["time_consumed"])
+                                is_think_message=False
+                            else:
+                                messageService.save_messages(parsed_data.get("message_id"),is_think_message,parsed_data["time_consumed"])
+                            message_is_saved=True
                         # 精简字段
                         parsed_data = {
                             "event": parsed_data.get("event"),
