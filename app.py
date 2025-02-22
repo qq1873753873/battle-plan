@@ -9,6 +9,10 @@ from model.models import db as database
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://postgres:difyai123456@localhost:5432/battleplan"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False  # 禁用不必要的警告
+app.config['SESSION_COOKIE_SECURE'] = False  # 允许 HTTP 传输 cookie
+app.config['SESSION_COOKIE_HTTPONLY'] = True  # 防止 JavaScript 访问 cookie
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # 允许部分跨站请求携带 cookie
+
 app.register_blueprint(api)
 app.secret_key = "ae5d0bf8ce5303689894297c1658e538a5b2a83de104c7f7254391ce319b2e22"
 # 绑定 db 对象到 Flask 应用

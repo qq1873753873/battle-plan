@@ -102,7 +102,7 @@ class ConversationService():
         result = db.session.execute(query).scalar_one_or_none()
 
         return result
-
+    
     @staticmethod
     def save_conversation_id_to_db(battle_conversation_id, conversation_id, stage):
         """

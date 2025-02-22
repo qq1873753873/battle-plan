@@ -10,6 +10,8 @@ from datetime import datetime
 import requests
 from model.models import db,Conversation
 import time
+from model.gantt_model import GanttData
+from openai import OpenAI
 
 #获取会话列表
 @api.route('/conversations', methods=['GET'])
@@ -206,7 +208,6 @@ def chat():
                 "url": "",
                 "upload_file_id": file_id
                 }
-            print(file)
             new_files.append(file)
         data["files"]=new_files
     if battle_conversation_id=="":
@@ -214,24 +215,20 @@ def chat():
         battle_conversation_id=str(uuid.uuid4())
     if not data:
         return {"error": "No data provided"}, 400
-    if 'user_stage' not in session or (session['user_stage'] == 1 and not next_stage(query)):
-        session['user_stage'] = 1
-        print(f"当前阶段:{session['user_stage']}")
+    next_stage=get_next_stage(query=query,battle_conversation_id=battle_conversation_id)
+    data['query']=data.get('last_answer','')+data.get('query','')
+    if next_stage==1:
+        print(f"当前阶段:1")
         response_data = extract(data,battle_conversation_id)
-    elif session['user_stage'] == 2 and not next_stage(query):
-        print(f"当前阶段:{session['user_stage']}")
+    elif next_stage==2:
+        print(f"当前阶段:2")
         response_data = goal(data,battle_conversation_id)
-    elif session['user_stage'] == 3 and not next_stage(query):
-        print(f"当前阶段:{session['user_stage']}")
-        response_data = task(data,battle_conversation_id)
-    elif session['user_stage'] == 4:
-        print(f"当前阶段:{session['user_stage']}")
-        response_data = solution(data,battle_conversation_id)
-        #生成一次后返回状态1
-        session['user_stage'] = 1
-    else:
-        return {"error": "Invalid stage"}, 400
-
+    elif next_stage==3:
+        print(f"当前阶段:3")
+        response_data = task(data,battle_conversation_id) 
+    elif next_stage==4:
+        print(f"当前阶段:4")
+        response_data = solution(data,battle_conversation_id)    
     response = Response(stream_with_context(response_data), content_type='text/event-stream')
     # 添加 Cache-Control 和 Connection 头部
     response.headers['Cache-Control'] = 'no-cache'
@@ -280,15 +277,53 @@ def task(data,battle_conversation_id):
 
 #4. 作战行动方案
 def solution(data,battle_conversation_id):
-    start_time=time.time()
-    url = "http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/chat-messages"
-    # 发送 POST 请求
-    response = requests.post(url, json=data, verify=False,stream=True)
-    # 检查目标服务的响应状态码
-    if response.status_code != 200:
-        return {"error": "Failed to forward request", "status_code": response.status_code}, 500
-    # 返回流式响应
-    return generate(response,battle_conversation_id,4, current_app._get_current_object(),start_time)
+    # start_time=time.time()
+    # url = "http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/chat-messages"
+    # # 发送 POST 请求
+    # response = requests.post(url, json=data, verify=False,stream=True)
+    # # 检查目标服务的响应状态码
+    # if response.status_code != 200:
+    #     return {"error": "Failed to forward request", "status_code": response.status_code}, 500
+    # # 返回流式响应
+    # return generate(response,battle_conversation_id,4, current_app._get_current_object(),start_time)
+    client = OpenAI(
+        api_key="EMPTY",
+        base_url="http://123.57.244.236:1743/v1"
+    )
+    completion = client.chat.completions.create(
+        model="deepseek-14B",
+        messages=[
+            {
+                "role": "user",
+                "content": data.get('query'),
+            }
+        ],
+        extra_body={"guided_json": GanttData.model_json_schema()},
+    )
+    model_response = completion.choices[0].message.content
+
+    # 生成唯一的 message_id（这里使用 UUID）
+    message_id = str(uuid.uuid4())
+
+    # 如果 model_response 是字典或者其他复杂类型，将其转换为 JSON 字符串
+    model_response_str = json.dumps(model_response, ensure_ascii=False) if isinstance(model_response, (dict, list)) else str(model_response)
+
+    # 构建返回值字典
+    response_data = {
+        "event": "message",
+        "conversation_id": str(uuid.uuid4()),  # 生成一个新的 conversation_id
+        "message_id": message_id,
+        "answer": f'```json\n{model_response_str}\n```\n\n',
+        "battle_conversation_id": battle_conversation_id,
+        "is_think_content": False,
+        "time_consumed": "2.0"  # 可以根据实际情况修改 time_consumed
+    }
+
+    # 将整个字典转化为 JSON 字符串，并替换外部双引号为转义形式
+    response_data_str = json.dumps(response_data)
+
+    # 格式化返回的字符串，符合你需要的格式
+    return f'data: {response_data_str}'
 
 #加工来自至慧工作流的响应
 
@@ -385,24 +420,30 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                 continue
 
 #根据用户查询判断是否进入下一阶段
-def next_stage(query):
-    current_stage=session['user_stage']
-    if current_stage==1:
-        if query == "请你思考一下向我汇报" or "作战目标" in query or "目标" in query:
-            session['user_stage']+=1
-            return True
-        else:
-            return False
-    elif current_stage==2:
-        if query == "审批通过，请制定作战任务" or "作战任务" in query or "任务" in query:
-            session['user_stage']+=1
-            return True
-        else:
-            return False
-    elif current_stage==3:
+def get_next_stage(query,battle_conversation_id):
+    conversationService=ConversationService()
+    battle_conversation=conversationService.get_conversation_by_id(battle_conversation_id)
+    if battle_conversation is None:
+        return 1
+    ids = [battle_conversation.id1, battle_conversation.id2, battle_conversation.id3, battle_conversation.id4]
+    if ids[3] is not None:
+        return 4
+    elif ids[3] is None and ids[2] is not None:
         if query == "审批通过，请制定详细作战行动方案" or "作战行动方案" in query or "方案" in query:
-            session['user_stage']+=1
-            return True
+            return 4
         else:
-            return False
+            return 3
+    elif ids[2] is None and ids[1] is not None:
+        if query == "审批通过，请制定作战任务" or "作战任务" in query or "任务" in query:
+            return 3
+        else:
+            return 2
+    elif ids[1] is None and ids[0] is not None:
+        if query == "请你思考一下向我汇报" or "作战目标" in query or "目标" in query:
+            return 2
+        else:
+            return 1
+    else:
+        return 1
+
     
