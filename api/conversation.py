@@ -276,17 +276,20 @@ def task(data,battle_conversation_id):
 
 
 #4. 作战行动方案
-def solution(data, battle_conversation_id):
+def solution(data,battle_conversation_id):
+    # start_time=time.time()
+    # url = "http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/chat-messages"
+    # # 发送 POST 请求
+    # response = requests.post(url, json=data, verify=False,stream=True)
+    # # 检查目标服务的响应状态码
+    # if response.status_code != 200:
+    #     return {"error": "Failed to forward request", "status_code": response.status_code}, 500
+    # # 返回流式响应
+    # return generate(response,battle_conversation_id,4, current_app._get_current_object(),start_time)
     client = OpenAI(
         api_key="EMPTY",
         base_url="http://123.57.244.236:1743/v1"
     )
-
-    # 生成唯一的 conversation_id 和 message_id
-    conversation_id = str(uuid.uuid4())
-    message_id = str(uuid.uuid4())
-
-    # 获取模型的完整响应
     completion = client.chat.completions.create(
         model="deepseek-14B",
         messages=[
@@ -299,70 +302,28 @@ def solution(data, battle_conversation_id):
     )
     model_response = completion.choices[0].message.content
 
-    # 构建完整的返回值字典
+    # 生成唯一的 message_id（这里使用 UUID）
+    message_id = str(uuid.uuid4())
+
+    # 如果 model_response 是字典或者其他复杂类型，将其转换为 JSON 字符串
+    model_response_str = json.dumps(model_response, ensure_ascii=False) if isinstance(model_response, (dict, list)) else str(model_response)
+
+    # 构建返回值字典
     response_data = {
         "event": "message",
-        "conversation_id": conversation_id,
+        "conversation_id": str(uuid.uuid4()),  # 生成一个新的 conversation_id
         "message_id": message_id,
-        "answer": f'```json\n{model_response}\n```\n\n',
+        "answer": f'```json\n{model_response_str}\n```\n\n',
         "battle_conversation_id": battle_conversation_id,
         "is_think_content": False,
-        "time_consumed": "2.0"
+        "time_consumed": "2.0"  # 可以根据实际情况修改 time_consumed
     }
 
-    # 返回第一条数据（完整响应）
-    yield f'data: {json.dumps(response_data)}\n\n'
+    # 将整个字典转化为 JSON 字符串，并替换外部双引号为转义形式
+    response_data_str = json.dumps(response_data)
 
-    # 返回第二条数据（结束标志）
-    yield 'data: [DONE]\n\n'
-# def solution(data,battle_conversation_id):
-#     # start_time=time.time()
-#     # url = "http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/chat-messages"
-#     # # 发送 POST 请求
-#     # response = requests.post(url, json=data, verify=False,stream=True)
-#     # # 检查目标服务的响应状态码
-#     # if response.status_code != 200:
-#     #     return {"error": "Failed to forward request", "status_code": response.status_code}, 500
-#     # # 返回流式响应
-#     # return generate(response,battle_conversation_id,4, current_app._get_current_object(),start_time)
-#     client = OpenAI(
-#         api_key="EMPTY",
-#         base_url="http://123.57.244.236:1743/v1"
-#     )
-#     completion = client.chat.completions.create(
-#         model="deepseek-14B",
-#         messages=[
-#             {
-#                 "role": "user",
-#                 "content": data.get('query'),
-#             }
-#         ],
-#         extra_body={"guided_json": GanttData.model_json_schema()},
-#     )
-#     model_response = completion.choices[0].message.content
-
-#     # 生成唯一的 message_id（这里使用 UUID）
-#     message_id = str(uuid.uuid4())
-
-#     # 如果 model_response 是字典或者其他复杂类型，将其转换为 JSON 字符串
-#     model_response_str = json.dumps(model_response, ensure_ascii=False) if isinstance(model_response, (dict, list)) else str(model_response)
-
-#     # 构建返回值字典
-#     response_data = {
-#         "event": "message",
-#         "conversation_id": str(uuid.uuid4()),  # 生成一个新的 conversation_id
-#         "message_id": message_id,
-#         "answer": f'```json\n{model_response_str}\n```\n\n',
-#         "battle_conversation_id": battle_conversation_id,
-#         "is_think_content": False,
-#         "time_consumed": "2.0"  # 可以根据实际情况修改 time_consumed
-#     }
-
-#     # 将整个字典转化为 JSON 字符串，并替换外部双引号为转义形式
-#     response_data_str = json.dumps(response_data)
-
-#     # 格式化返回的字符串，符合你需要的格式
-#     return f'data: {response_data_str}'
+    # 格式化返回的字符串，符合你需要的格式
+    return f'data: {response_data_str}\n\n'
 
 #加工来自至慧工作流的响应
 
