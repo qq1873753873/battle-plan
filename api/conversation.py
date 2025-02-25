@@ -348,7 +348,7 @@ def solution(data,battle_conversation_id):
         "answer": f'```json\n{model_response_str}\n```\n\n',
         "battle_conversation_id": battle_conversation_id,
         "is_think_content": False,
-        "time_consumed": "2.0"  # 可以根据实际情况修改 time_consumed
+        "time_consumed": 0  # 可以根据实际情况修改 time_consumed
     }
 
     # 将整个字典转化为 JSON 字符串，并替换外部双引号为转义形式
@@ -359,7 +359,7 @@ def solution(data,battle_conversation_id):
         id=message_id,
         battle_conversation_id=battle_conversation_id,
         is_think_message=False,
-        think_content="",
+        think_content=None,
         time_consumed_on_thinking=0,
         query=data.get("query"),
         answer=f'```json\n{model_response_str}\n```\n\n',
@@ -470,7 +470,7 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                             "answer": "",
                             "battle_conversation_id": parsed_data.get("battle_conversation_id"),
                             "is_think_content": False,
-                            "time_consumed": "0",
+                            "time_consumed": 0,
                             "stage":stage
                         }
                         yield f"data: {json.dumps(parsed_data)}\n\n"
