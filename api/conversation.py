@@ -224,6 +224,8 @@ def chat():
         data["conversation_id"]=None
         data["parent_message_id"]=None
     if next_stage==1:
+        if data.get('parent_message_id')=="": #防止前端输成"",会报错
+            data["parent_message_id"]=None 
         print(f"当前阶段:1")
         response_data = extract(data,battle_conversation_id)
     elif next_stage==2:
