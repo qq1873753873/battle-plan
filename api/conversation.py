@@ -4,11 +4,11 @@ import uuid
 from services.conversation_service import ConversationService
 from services.message_service import MessageService
 from . import api  
-from flask import Response, request, jsonify, app, stream_with_context,session,current_app
+from flask import Response, request, jsonify, app, stream_with_context,current_app
 import os
 from datetime import datetime
 import requests
-from model.models import db,Conversation
+from model.models import db,Conversation,Message
 import time
 from model.gantt_model import GanttData
 from openai import OpenAI
@@ -82,18 +82,18 @@ def messages():
 
     # 获取 id1, id2, id3, id4
     ids = [conversation.id1, conversation.id2, conversation.id3, conversation.id4]
-
+    print(ids)
     # 外部 API 的基础 URL
     urls =[ "http://123.57.244.236:35001//console/api/installed-apps/0e1144c1-658d-4b33-a180-939d92cd6008/messages",
            "http://123.57.244.236:35001//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/messages",
-           "http://123.57.244.236:35001//console/api/installed-apps/b09fdf1b-e143-4ab1-866a-6dbce4f35392/messages",
-           "http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/messages"  
+           "http://123.57.244.236:35001//console/api/installed-apps/b09fdf1b-e143-4ab1-866a-6dbce4f35392/messages"
+           #"http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/messages"  
     ]
 
     # 存储所有消息记录
     all_messages = []
 
-    # 遍历 id1, id2, id3, id4，分别调用外部 API
+    # 遍历前三个依赖至慧的 id1, id2, id3，分别调用外部 API
     for i, conversation_id in enumerate(ids, start=1):
         if not conversation_id:
             print(f"id{i} is missing, skipping...")
@@ -113,6 +113,7 @@ def messages():
                 #data中的answer中如果有<think></think>的话，需要拆分将这个标签内的数据切到一个新的字段:think_content
                 # 遍历每条消息，处理 answer 字段中的 <think> 标签
                 for message in data:
+                    #print(f'消息：{message}')
                     # 分离思考和回复
                     answer = message.get("answer", "")
                     if "<think>" in answer and "</think>" in answer:
@@ -130,7 +131,8 @@ def messages():
                     else:
                         message["think_content"] =None
                     #公用字段修改
-                    message["time_consumed_on_thinking"]=messageService.get_message_by_id(message.get("id")).time_consumed_on_thinking
+                    message_with_time=messageService.get_message_by_id(message.get("id"))
+                    message["time_consumed_on_thinking"]=message_with_time.time_consumed_on_thinking if message_with_time else 10.0
                     message["stage"]=i
                     message_files=message.get("message_files", [])
                     # 精简文件信息
@@ -153,7 +155,9 @@ def messages():
                 print(f"Failed to fetch messages for id{i}: {response.status_code}")
         except Exception as e:
             print(f"Error fetching messages for id{i}: {e}")
-
+    #TODO: 根据当前的battleid查第4步的消息
+    message_ganta=messageService.get_messages_by_battle_conversation_id(battle_conversation_id)
+    all_messages.extend(message_ganta)
     # 返回合并后的结果
     return jsonify({"battle_conversation_id": battle_conversation_id, "messages": all_messages})
 
@@ -211,12 +215,14 @@ def chat():
             new_files.append(file)
         data["files"]=new_files
     if battle_conversation_id=="":
-        session['user_stage'] = 1
         battle_conversation_id=str(uuid.uuid4())
     if not data:
         return {"error": "No data provided"}, 400
-    next_stage=get_next_stage(query=query,battle_conversation_id=battle_conversation_id)
-    data['query']=data.get('last_answer','')+data.get('query','')
+    next_stage,changed=get_next_stage(query=query,battle_conversation_id=battle_conversation_id)
+    #如果改变工作流了，就清空这个工作流的两个字段，避免报错
+    if changed:
+        data["conversation_id"]=None
+        data["parent_message_id"]=None
     if next_stage==1:
         print(f"当前阶段:1")
         response_data = extract(data,battle_conversation_id)
@@ -235,42 +241,68 @@ def chat():
     response.headers['Connection'] = 'keep-alive'
     return response
 
+#停止回复
+@api.route('/stop',methods=['POST'])
+def stop():
+    #根据当前状态来停止对应工作流的回复
+    pass
 #1. 想定内容提取与对话
 def extract(data, battle_conversation_id):
+    data['query']=data.get('last_answer','')+data.get('query','')
     start_time=time.time()
-    url = "http://123.57.244.236:35001//console/api/installed-apps/0e1144c1-658d-4b33-a180-939d92cd6008/chat-messages"
+    url = "http://ty1.puhuacloud.com:20015//console/api/installed-apps/0e1144c1-658d-4b33-a180-939d92cd6008/chat-messages"
     # 发送 POST 请求
     response = requests.post(url, json=data, verify=False, stream=True)
 
     # 检查目标服务的响应状态码
     if response.status_code != 200:
-        return {"error": "Failed to forward request", "status_code": response.status_code}, 500
+        error_message = {
+                "error": "Failed to forward request",
+                "status_code": response.status_code
+            }
+        print(f'"error": "Failed to forward request", "status_code": {response.status_code}')
+        return generate_single_stream_response(error_message)
 
     # 返回流式响应
     return generate(response, battle_conversation_id, 1, current_app._get_current_object(),start_time)
 
-
 #2. 总体作战目标
 def goal(data,battle_conversation_id):
+    data['query']=data.get('last_answer','')+data.get('query','')
     start_time=time.time()
-    url = "http://123.57.244.236:35001//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/chat-messages"
+    url = "http://ty1.puhuacloud.com:20015//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/chat-messages"
     # 发送 POST 请求
+    # del data['battle_conversation_id']
+    # del data['files']
+    # del data['last_answer']
     response = requests.post(url, json=data, verify=False,stream=True)
     # 检查目标服务的响应状态码
     if response.status_code != 200:
-        return {"error": "Failed to forward request", "status_code": response.status_code}, 500
+        error_message = {
+                "error": "Failed to forward request",
+                "status_code": response.status_code
+            }
+        print(f'"error": "Failed to forward request", "status_code": {response.status_code}')
+        return generate_single_stream_response(error_message)
+
     # 返回流式响应
     return generate(response,battle_conversation_id,2, current_app._get_current_object(),start_time)
 
 #3. 作战任务筹划
 def task(data,battle_conversation_id):
+    data['query']=data.get('last_answer','')+data.get('query','')
     start_time=time.time()
-    url = "http://123.57.244.236:35001//console/api/installed-apps/b09fdf1b-e143-4ab1-866a-6dbce4f35392/chat-messages"
+    url = "http://ty1.puhuacloud.com:20015//console/api/installed-apps/b09fdf1b-e143-4ab1-866a-6dbce4f35392/chat-messages"
     # 发送 POST 请求
     response = requests.post(url, json=data, verify=False,stream=True)
     # 检查目标服务的响应状态码
     if response.status_code != 200:
-        return {"error": "Failed to forward request", "status_code": response.status_code}, 500
+        error_message = {
+                "error": "Failed to forward request",
+                "status_code": response.status_code
+            }
+        print(f'"error": "Failed to forward request", "status_code": {response.status_code}')
+        return generate_single_stream_response(error_message)
     # 返回流式响应
     return generate(response,battle_conversation_id,3, current_app._get_current_object(),start_time)
 
@@ -288,14 +320,14 @@ def solution(data,battle_conversation_id):
     # return generate(response,battle_conversation_id,4, current_app._get_current_object(),start_time)
     client = OpenAI(
         api_key="EMPTY",
-        base_url="http://123.57.244.236:1743/v1"
+        base_url="http://123.57.244.236:1740/v1"
     )
     completion = client.chat.completions.create(
         model="deepseek-14B",
         messages=[
             {
                 "role": "user",
-                "content": data.get('query'),
+                "content": data.get('last_answer','')+data.get('query',''),
             }
         ],
         extra_body={"guided_json": GanttData.model_json_schema()},
@@ -321,9 +353,21 @@ def solution(data,battle_conversation_id):
 
     # 将整个字典转化为 JSON 字符串，并替换外部双引号为转义形式
     response_data_str = json.dumps(response_data)
-
+    # TODO:存一条完整的消息到本地
+    messageService=MessageService()
+    messageService.save_message(
+        id=message_id,
+        battle_conversation_id=battle_conversation_id,
+        is_think_message=False,
+        think_content="",
+        time_consumed_on_thinking=0,
+        query=data.get("query"),
+        answer=f'```json\n{model_response_str}\n```\n\n',
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
     # 格式化返回的字符串，符合你需要的格式
-    return f'data: {response_data_str}\n\n'
+    return generate_single_stream_response(response_data_str)
 
 #加工来自至慧工作流的响应
 
@@ -392,8 +436,8 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                             parsed_data["is_think_content"] = is_think_content
 
                         # 计算耗时
-                        parsed_data["time_consumed"] = f"{time.time() - start_time:.1f}"
-                        #parsed_data["time_consumed"] = round(time.time() - start_time, 1)
+                        #parsed_data["time_consumed"] = f"{time.time() - start_time:.1f}"
+                        parsed_data["time_consumed"] = round(time.time() - start_time, 1)
                         # 是思考消息，且刚思考结束的第一次，需要保存一条消息
                         if not message_is_saved:
                             if is_think_message and is_think_content is False:
@@ -408,42 +452,69 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                             "conversation_id": parsed_data.get("conversation_id"),
                             "message_id": parsed_data.get("message_id"),
                             "answer": parsed_data.get("answer"),
-                            "battle_conversation_id": parsed_data.get("battle_conversation_id"),
+                            "battle_conversation_id": battle_conversation_id,
                             "is_think_content": parsed_data.get("is_think_content"),
-                            "time_consumed": parsed_data.get("time_consumed")
+                            "time_consumed": parsed_data.get("time_consumed"),
+                            "stage":stage
                         }
 
                         # 转换为 JSON 字符串并加上 data: 前缀
+                        yield f"data: {json.dumps(parsed_data)}\n\n"
+                    elif parsed_data.get("event") == "error":
+                        #增加一条记录，标明报错，并且返回给前端
+                        parsed_data = {
+                            "event": "error",
+                            "message": parsed_data.get("message"),
+                            "conversation_id": parsed_data.get("conversation_id"),
+                            "message_id": parsed_data.get("message_id"),
+                            "answer": "",
+                            "battle_conversation_id": parsed_data.get("battle_conversation_id"),
+                            "is_think_content": False,
+                            "time_consumed": "0",
+                            "stage":stage
+                        }
                         yield f"data: {json.dumps(parsed_data)}\n\n"
             except UnicodeDecodeError:
                 # 如果解码失败，跳过该块
                 continue
 
+
 #根据用户查询判断是否进入下一阶段
 def get_next_stage(query,battle_conversation_id):
     conversationService=ConversationService()
     battle_conversation=conversationService.get_conversation_by_id(battle_conversation_id)
+    #如果返回为True，需要清空前端传回的conversationid和messageid
     if battle_conversation is None:
-        return 1
+        return 1,False
     ids = [battle_conversation.id1, battle_conversation.id2, battle_conversation.id3, battle_conversation.id4]
     if ids[3] is not None:
-        return 4
+        return 4,False
     elif ids[3] is None and ids[2] is not None:
         if query == "审批通过，请制定详细作战行动方案" or "作战行动方案" in query or "方案" in query:
-            return 4
+            return 4,True
         else:
-            return 3
+            return 3,False
     elif ids[2] is None and ids[1] is not None:
         if query == "审批通过，请制定作战任务" or "作战任务" in query or "任务" in query:
-            return 3
+            return 3,True
         else:
-            return 2
+            return 2,False
     elif ids[1] is None and ids[0] is not None:
         if query == "请你思考一下向我汇报" or "作战目标" in query or "目标" in query:
-            return 2
+            return 2,True
         else:
-            return 1
+            return 1,False
     else:
-        return 1
+        return 1,False
 
     
+def generate_single_stream_response(message):
+    """
+    生成一个符合 SSE 格式的错误响应。
+    
+    :param error_message: dict - 错误信息
+    :return: generator - 流式响应生成器
+    """
+    def single_stream():
+        yield f"data: {message}\n\n".encode("utf-8")  # 确保返回的是字节类型
+    return single_stream()
