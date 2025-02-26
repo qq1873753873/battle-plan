@@ -61,7 +61,7 @@ def rename(battle_conversation_id):
 
 #获取单个会话的历史聊天记录
 @api.route('/messages', methods=['GET'])
-def messages():
+def messages(separator="\n---\n"):
     """
     获取单个会话的历史聊天记录。
     根据 battle_conversation_id 查询数据库中的 id1, id2, id3, id4，
@@ -114,6 +114,10 @@ def messages():
                 # 遍历每条消息，处理 answer 字段中的 <think> 标签
                 for message in data:
                     #print(f'消息：{message}')
+                    # 处理拼接last_answer和query导致的query需要分割的问题
+                    query_parts=message.get("query").split(separator)
+                    if len(query_parts)>=2:
+                        message["query"]=query_parts[-1]
                     # 分离思考和回复
                     answer = message.get("answer", "")
                     if "<think>" in answer and "</think>" in answer:
@@ -250,7 +254,8 @@ def stop():
     pass
 #1. 想定内容提取与对话
 def extract(data, battle_conversation_id):
-    data['query']=data.get('last_answer','')+data.get('query','')
+    #第一阶段不需要拼接，因为都在工作流一的上下文中
+    #data['query']=data.get('last_answer','')+data.get('query','')
     start_time=time.time()
     url = "http://ty1.puhuacloud.com:20015//console/api/installed-apps/0e1144c1-658d-4b33-a180-939d92cd6008/chat-messages"
     # 发送 POST 请求
@@ -269,8 +274,8 @@ def extract(data, battle_conversation_id):
     return generate(response, battle_conversation_id, 1, current_app._get_current_object(),start_time)
 
 #2. 总体作战目标
-def goal(data,battle_conversation_id):
-    data['query']=data.get('last_answer','')+data.get('query','')
+def goal(data,battle_conversation_id,separator="\n---\n"):
+    data['query']=data.get('last_answer','')+separator+data.get('query','')
     start_time=time.time()
     url = "http://ty1.puhuacloud.com:20015//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/chat-messages"
     # 发送 POST 请求
@@ -279,6 +284,11 @@ def goal(data,battle_conversation_id):
     # del data['last_answer']
     response = requests.post(url, json=data, verify=False,stream=True)
     # 检查目标服务的响应状态码
+    # 如果是带着上次的conversation和message参数请求访问工作流，会报错404，清空这两个参数重新访问
+    if response.status_code ==404:
+        data["conversation_id"]=None
+        data["parent_message_id"]=None
+        response = requests.post(url, json=data, verify=False,stream=True)
     if response.status_code != 200:
         error_message = {
                 "error": "Failed to forward request",
@@ -291,12 +301,16 @@ def goal(data,battle_conversation_id):
     return generate(response,battle_conversation_id,2, current_app._get_current_object(),start_time)
 
 #3. 作战任务筹划
-def task(data,battle_conversation_id):
-    data['query']=data.get('last_answer','')+data.get('query','')
+def task(data,battle_conversation_id,separator="\n---\n"):
+    data['query']=data.get('last_answer','')+separator+data.get('query','')
     start_time=time.time()
     url = "http://ty1.puhuacloud.com:20015//console/api/installed-apps/b09fdf1b-e143-4ab1-866a-6dbce4f35392/chat-messages"
     # 发送 POST 请求
     response = requests.post(url, json=data, verify=False,stream=True)
+    if response.status_code ==404:
+        data["conversation_id"]=None
+        data["parent_message_id"]=None
+        response = requests.post(url, json=data, verify=False,stream=True)
     # 检查目标服务的响应状态码
     if response.status_code != 200:
         error_message = {
