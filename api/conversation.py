@@ -221,7 +221,11 @@ def chat():
     if battle_conversation_id=="":
         battle_conversation_id=str(uuid.uuid4())
     if not data:
-        return {"error": "No data provided"}, 400
+        error_message = {
+                "error": "No data provided",
+                "status_code": 400
+            }
+        return generate_single_stream_response(error_message)
     next_stage,changed=get_next_stage(query=query,battle_conversation_id=battle_conversation_id)
     #如果改变工作流了，就清空这个工作流的两个字段，避免报错
     if changed:
@@ -269,9 +273,9 @@ def extract(data, battle_conversation_id):
             }
         print(f'"error": "Failed to forward request", "status_code": {response.status_code}')
         return generate_single_stream_response(error_message)
-
+    battle_conversation_name=data['query'][:10] if data['query'] and data['query'] !="" else "New Conversation"
     # 返回流式响应
-    return generate(response, battle_conversation_id, 1, current_app._get_current_object(),start_time)
+    return generate(response, battle_conversation_id, 1, current_app._get_current_object(),start_time,battle_conversation_name)
 
 #2. 总体作战目标
 def goal(data,battle_conversation_id,separator="\n---\n"):
@@ -364,7 +368,10 @@ def solution(data,battle_conversation_id):
         "answer": f'```json\n{model_response_str}\n```\n\n',
         "battle_conversation_id": battle_conversation_id,
         "is_think_content": False,
-        "time_consumed": 0  # 可以根据实际情况修改 time_consumed
+        "time_consumed": 0,  # 可以根据实际情况修改 time_consumed
+        "error": None,
+        "status_code":200
+
     }
 
     # 将整个字典转化为 JSON 字符串，并替换外部双引号为转义形式
@@ -387,7 +394,7 @@ def solution(data,battle_conversation_id):
 
 #加工来自至慧工作流的响应
 
-def generate(response, battle_conversation_id, stage, app, start_time):
+def generate(response, battle_conversation_id, stage, app, start_time,battle_conversation_name="New Conversation"):
     messageService=MessageService()
     buffer = ""
     first_conversation_id_found = False
@@ -432,7 +439,7 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                         # 如果是第一次找到 conversation_id，则调用回调函数
                         with app.app_context():  # 使用传入的应用实例
                             ConversationService.save_conversation_id_to_db(
-                                battle_conversation_id, conversation_id, stage
+                                battle_conversation_id, conversation_id, stage,battle_conversation_name
                             )
                         first_conversation_id_found = True  # 设置标志变量
 
@@ -471,7 +478,9 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                             "battle_conversation_id": battle_conversation_id,
                             "is_think_content": parsed_data.get("is_think_content"),
                             "time_consumed": parsed_data.get("time_consumed"),
-                            "stage":stage
+                            "stage":stage,
+                            "error": None,
+                            "status_code":200
                         }
 
                         # 转换为 JSON 字符串并加上 data: 前缀
@@ -479,17 +488,11 @@ def generate(response, battle_conversation_id, stage, app, start_time):
                     elif parsed_data.get("event") == "error":
                         #增加一条记录，标明报错，并且返回给前端
                         parsed_data = {
-                            "event": "error",
-                            "message": parsed_data.get("message"),
-                            "conversation_id": parsed_data.get("conversation_id"),
-                            "message_id": parsed_data.get("message_id"),
-                            "answer": "",
-                            "battle_conversation_id": parsed_data.get("battle_conversation_id"),
-                            "is_think_content": False,
-                            "time_consumed": 0,
-                            "stage":stage
+                            "error": parsed_data.get("message"),
+                            "status_code":404
                         }
-                        yield f"data: {json.dumps(parsed_data)}\n\n"
+                        #yield f"data: {json.dumps(parsed_data)}\n\n"
+                        return generate_single_stream_response(parsed_data)
             except UnicodeDecodeError:
                 # 如果解码失败，跳过该块
                 continue

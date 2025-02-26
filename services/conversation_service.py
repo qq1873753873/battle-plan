@@ -9,8 +9,8 @@ class ConversationService():
         result = db.session.execute(query).scalars().all()
 
         # 打印结果
-        for conversation in result:
-            print(conversation.id, conversation.name)
+        # for conversation in result:
+        #     print(conversation.id, conversation.name)
         # 转换为字典列表
         conversations_data = [
             {
@@ -104,7 +104,7 @@ class ConversationService():
         return result
     
     @staticmethod
-    def save_conversation_id_to_db(battle_conversation_id, conversation_id, stage):
+    def save_conversation_id_to_db(battle_conversation_id, conversation_id, stage,battle_conversation_name):
         """
         根据 battle_conversation_id 和 stage 将 conversation_id 保存到数据库中。
         :param battle_conversation_id: conversations 表的主键
@@ -123,7 +123,7 @@ class ConversationService():
                 # 如果不存在，则创建新记录
                 conversation = Conversation(
                     id=battle_conversation_id,
-                    name="New Conversation"  # 默认名称
+                    name=battle_conversation_name  # 默认名称
                 )
                 db.session.add(conversation)
                 db.session.flush()  # 确保新记录的 ID 可用
