@@ -1,6 +1,7 @@
 import json
 from flask_cors import cross_origin
 import uuid
+from dtos.response_utils import *
 from services.conversation_service import ConversationService
 from services.message_service import MessageService
 from . import api  
@@ -82,7 +83,6 @@ def messages(separator="\n---\n"):
 
     # 获取 id1, id2, id3, id4
     ids = [conversation.id1, conversation.id2, conversation.id3, conversation.id4]
-    print(ids)
     # 外部 API 的基础 URL
     urls =[ "http://123.57.244.236:35001//console/api/installed-apps/0e1144c1-658d-4b33-a180-939d92cd6008/messages",
            "http://123.57.244.236:35001//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/messages",
@@ -91,8 +91,7 @@ def messages(separator="\n---\n"):
     ]
 
     # 存储所有消息记录
-    all_messages = []
-
+    all_messages=MessagesResponse(battle_conversation_id=battle_conversation_id)
     # 遍历前三个依赖至慧的 id1, id2, id3，分别调用外部 API
     for i, conversation_id in enumerate(ids, start=1):
         if not conversation_id:
@@ -105,7 +104,7 @@ def messages(separator="\n---\n"):
 
             # 调用外部 API
             response = requests.get(url)
-
+            
             # 检查响应状态码
             if response.status_code == 200:
                 # 解析 JSON 数据
@@ -113,11 +112,12 @@ def messages(separator="\n---\n"):
                 #data中的answer中如果有<think></think>的话，需要拆分将这个标签内的数据切到一个新的字段:think_content
                 # 遍历每条消息，处理 answer 字段中的 <think> 标签
                 for message in data:
-                    #print(f'消息：{message}')
+                    message_response=MessageResponse()
+                    message_response.created_at=message.get("created_at")
                     # 处理拼接last_answer和query导致的query需要分割的问题
                     query_parts=message.get("query").split(separator)
                     if len(query_parts)>=2:
-                        message["query"]=query_parts[-1]
+                        message_response.query=query_parts[-1]
                     # 分离思考和回复
                     answer = message.get("answer", "")
                     if "<think>" in answer and "</think>" in answer:
@@ -130,40 +130,33 @@ def messages(separator="\n---\n"):
                         answer_after_think = answer[think_end + len("</think>"):].strip()
                         
                         # 更新 message 字段
-                        message["think_content"] = None if think_content=="\n" or think_content=="\n\n" else think_content
-                        message["answer"] = answer_after_think
+                        message_response.think_content = None if think_content=="\n" or think_content=="\n\n" else think_content
+                        message_response.answer = answer_after_think
                     else:
-                        message["think_content"] =None
+                        message_response.think_content =None
                     #公用字段修改
                     message_with_time=messageService.get_message_by_id(message.get("id"))
-                    message["time_consumed_on_thinking"]=message_with_time.time_consumed_on_thinking if message_with_time else 10.0
-                    message["stage"]=i
-                    message_files=message.get("message_files", [])
+                    message_response.time_consumed_on_thinking=message_with_time.time_consumed_on_thinking if message_with_time else 10.0
+                    message_response.stage=i
+                    message_response.id=message.get("id")
+                    message_files=message.get("message_files", [])             
                     # 精简文件信息
-                    filtered_message_files = []
                     for message_file in message_files:
-                        # 构造新的精简字段
-                        filtered_message_files.append({
-                            "filename": message_file.get("filename"),
-                            "id": message_file.get("id"),
-                            "size": message_file.get("size")
-                        })
-                    message["message_files"] = filtered_message_files
-                    # 移除字段
-                    fields_to_del=["error","feedback","retriever_resources","status","agent_thoughts"]
-                    for field_to_del in fields_to_del:
-                        if field_to_del in message:
-                            del message[field_to_del]
-                all_messages.extend(data)  # 将数据直接加入 all_messages
+                        message_response.message_files.append(MessageFile(
+                            filename=message_file.get("filename"),
+                            id=message_file.get("id"),
+                            size=message_file.get("size")
+                        ))
+                    all_messages.messages.append(message_response) 
             else:
                 print(f"Failed to fetch messages for id{i}: {response.status_code}")
         except Exception as e:
             print(f"Error fetching messages for id{i}: {e}")
     #TODO: 根据当前的battleid查第4步的消息
     message_ganta=messageService.get_messages_by_battle_conversation_id(battle_conversation_id)
-    all_messages.extend(message_ganta)
+    all_messages.messages.extend(message_ganta)
     # 返回合并后的结果
-    return jsonify({"battle_conversation_id": battle_conversation_id, "messages": all_messages})
+    return jsonify(all_messages.model_dump())
 
 #文件上传
 @api.route('/upload', methods=['POST'])
@@ -252,10 +245,18 @@ def chat():
     return response
 
 #停止回复
-@api.route('/stop',methods=['POST'])
+@api.route('/stop', methods=['POST'])
 def stop():
-    #根据当前状态来停止对应工作流的回复
-    pass
+    data = request.json
+    battle_conversation_id = data.get('battle_conversation_id')  # 获取任务 ID
+    redis_client=current_app.extensions['redis']
+    if battle_conversation_id:
+        redis_client.set(f'stop:{battle_conversation_id}',"true")#设置为应该停止
+        #TODO: 统一返回消息格式
+        return jsonify({"message": f"Stop signal sent for battle_conversation_id: {battle_conversation_id}"}), 200
+    else:
+        return jsonify({"error": "Missing battle_conversation_id"}), 400
+    
 #1. 想定内容提取与对话
 def extract(data, battle_conversation_id):
     #第一阶段不需要拼接，因为都在工作流一的上下文中
@@ -282,10 +283,6 @@ def goal(data,battle_conversation_id,separator="\n---\n"):
     data['query']=data.get('last_answer','')+separator+data.get('query','')
     start_time=time.time()
     url = "http://ty1.puhuacloud.com:20015//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/chat-messages"
-    # 发送 POST 请求
-    # del data['battle_conversation_id']
-    # del data['files']
-    # del data['last_answer']
     response = requests.post(url, json=data, verify=False,stream=True)
     # 检查目标服务的响应状态码
     # 如果是带着上次的conversation和message参数请求访问工作流，会报错404，清空这两个参数重新访问
@@ -329,15 +326,11 @@ def task(data,battle_conversation_id,separator="\n---\n"):
 
 #4. 作战行动方案
 def solution(data,battle_conversation_id):
-    # start_time=time.time()
-    # url = "http://123.57.244.236:35001//console/api/installed-apps/cbc8823f-3d4d-47f8-a84c-dd3ae8f03576/chat-messages"
-    # # 发送 POST 请求
-    # response = requests.post(url, json=data, verify=False,stream=True)
-    # # 检查目标服务的响应状态码
-    # if response.status_code != 200:
-    #     return {"error": "Failed to forward request", "status_code": response.status_code}, 500
-    # # 返回流式响应
-    # return generate(response,battle_conversation_id,4, current_app._get_current_object(),start_time)
+    #当前不是流式，所以判断两次：开始前和返回前
+    redis_client=current_app.extensions['redis']
+    if redis_client.get(f'stop:{battle_conversation_id}')==b"true":
+        redis_client.set(f'stop:{battle_conversation_id}',"false")
+        return
     client = OpenAI(
         api_key="EMPTY",
         base_url="http://123.57.244.236:1740/v1"
@@ -351,7 +344,12 @@ def solution(data,battle_conversation_id):
             }
         ],
         extra_body={"guided_json": GanttData.model_json_schema()},
+        #stream=True
     )
+    #当前不是流式，所以判断两次：开始前和返回前
+    if redis_client.get(f'stop:{battle_conversation_id}')==b"true":
+        redis_client.set(f'stop:{battle_conversation_id}',"false")
+        return
     model_response = completion.choices[0].message.content
 
     # 生成唯一的 message_id（这里使用 UUID）
@@ -360,23 +358,18 @@ def solution(data,battle_conversation_id):
     # 如果 model_response 是字典或者其他复杂类型，将其转换为 JSON 字符串
     model_response_str = json.dumps(model_response, ensure_ascii=False) if isinstance(model_response, (dict, list)) else str(model_response)
 
-    # 构建返回值字典
-    response_data = {
-        "event": "message",
-        "conversation_id": str(uuid.uuid4()),  # 生成一个新的 conversation_id
-        "message_id": message_id,
-        "answer": f'```json\n{model_response_str}\n```\n\n',
-        "battle_conversation_id": battle_conversation_id,
-        "is_think_content": False,
-        "time_consumed": 0,  # 可以根据实际情况修改 time_consumed
-        "error": None,
-        "status_code":200
 
-    }
-
-    # 将整个字典转化为 JSON 字符串，并替换外部双引号为转义形式
-    response_data_str = json.dumps(response_data)
-    # TODO:存一条完整的消息到本地
+    streamSponse=StreamResponse(
+        event=Event.MESSAGE,
+        conversation_id= str(uuid.uuid4()), 
+        message_id=message_id,
+        answer=f'```json\n{model_response_str}\n```\n\n',
+        battle_conversation_id=battle_conversation_id,
+        is_think_content=False,
+        time_consumed= 0,
+        error=None,
+        status_code=200
+    )
     messageService=MessageService()
     messageService.save_message(
         id=message_id,
@@ -390,7 +383,8 @@ def solution(data,battle_conversation_id):
         updated_at=datetime.now()
     )
     # 格式化返回的字符串，符合你需要的格式
-    return generate_single_stream_response(response_data_str)
+    yield streamSponse.to_stream_format()
+    return
 
 #加工来自至慧工作流的响应
 
@@ -401,6 +395,13 @@ def generate(response, battle_conversation_id, stage, app, start_time,battle_con
     is_think_content = False
     is_think_message=False
     message_is_saved=False
+    stop_urls_pre=[
+        "http://ty1.puhuacloud.com:20015//console/api/installed-apps/0e1144c1-658d-4b33-a180-939d92cd6008/chat-messages/",
+        "http://ty1.puhuacloud.com:20015//console/api/installed-apps/4c97a3df-f2cc-4e3b-8ddf-6825f7fa1e85/chat-messages/",
+        "http://ty1.puhuacloud.com:20015//console/api/installed-apps/b09fdf1b-e143-4ab1-866a-6dbce4f35392/chat-messages/",
+        "",
+    ]
+    redis_client=current_app.extensions['redis']
     for chunk in response.iter_content(chunk_size=1024):
         if chunk:
             try:
@@ -442,12 +443,11 @@ def generate(response, battle_conversation_id, stage, app, start_time,battle_con
                                 battle_conversation_id, conversation_id, stage,battle_conversation_name
                             )
                         first_conversation_id_found = True  # 设置标志变量
-
                     # 将 battle_conversation_id 添加到顶层
                     parsed_data["battle_conversation_id"] = battle_conversation_id
 
                     # 处理消息内容
-                    if parsed_data.get("event") == "message":
+                    if parsed_data.get("event") == Event.MESSAGE.value:
                         if parsed_data.get("answer") == "<think>":
                             is_think_content = True
                             is_think_message=True
@@ -457,9 +457,6 @@ def generate(response, battle_conversation_id, stage, app, start_time,battle_con
                             parsed_data["is_think_content"] = True
                         else:
                             parsed_data["is_think_content"] = is_think_content
-
-                        # 计算耗时
-                        #parsed_data["time_consumed"] = f"{time.time() - start_time:.1f}"
                         parsed_data["time_consumed"] = round(time.time() - start_time, 1)
                         # 是思考消息，且刚思考结束的第一次，需要保存一条消息
                         if not message_is_saved:
@@ -469,30 +466,43 @@ def generate(response, battle_conversation_id, stage, app, start_time,battle_con
                             else:
                                 messageService.save_messages(parsed_data.get("message_id"),is_think_message,parsed_data["time_consumed"])
                             message_is_saved=True
-                        # 精简字段
-                        parsed_data = {
-                            "event": parsed_data.get("event"),
-                            "conversation_id": parsed_data.get("conversation_id"),
-                            "message_id": parsed_data.get("message_id"),
-                            "answer": parsed_data.get("answer"),
-                            "battle_conversation_id": battle_conversation_id,
-                            "is_think_content": parsed_data.get("is_think_content"),
-                            "time_consumed": parsed_data.get("time_consumed"),
-                            "stage":stage,
-                            "error": None,
-                            "status_code":200
-                        }
-
+                        taskId=parsed_data.get("task_id")
+                        streamResponse=StreamResponse(
+                            event=parsed_data.get("event"),
+                            conversation_id=parsed_data.get("conversation_id"),
+                            message_id=parsed_data.get("message_id"),
+                            answer=parsed_data.get("answer"),
+                            battle_conversation_id=battle_conversation_id,
+                            is_think_content=parsed_data.get("is_think_content"),
+                            time_consumed= parsed_data.get("time_consumed"),
+                            stage=stage,
+                            error= None,
+                            status_code=200
+                        )
+                        # 判断是否需要停止
+                        if redis_client.get(f'stop:{battle_conversation_id}')==b"true":
+                            #首先调用至慧的stop接口停止生成，然后停止标志位变为false
+                            stop_url=stop_urls_pre[stage-1]+str(taskId)+'/stop'
+                            print(f'stop-URL:{stop_url}')
+                            response = requests.post(stop_url,verify=False,stream=False)
+                            if response.status_code==200:
+                                print(f"{battle_conversation_id}停止成功")
+                                redis_client.set(f'stop:{battle_conversation_id}',"false")
+                            else :
+                                print(f"{battle_conversation_id}停止失败:{response.status_code}")#下次重试
                         # 转换为 JSON 字符串并加上 data: 前缀
-                        yield f"data: {json.dumps(parsed_data)}\n\n"
-                    elif parsed_data.get("event") == "error":
-                        #增加一条记录，标明报错，并且返回给前端
-                        parsed_data = {
-                            "error": parsed_data.get("message"),
-                            "status_code":404
-                        }
-                        #yield f"data: {json.dumps(parsed_data)}\n\n"
-                        return generate_single_stream_response(parsed_data)
+                        yield streamResponse.to_stream_format()
+                    elif parsed_data.get("event") == Event.ERROR.value:
+                        streamResponse=StreamResponse(
+                            error= parsed_data.get("message"),
+                            status_code=404
+                        )
+                        #return generate_single_stream_response(parsed_data)
+                        yield streamResponse.to_stream_format()
+                        return
+                    elif parsed_data.get("event")==Event.MESSAGE_END.value and redis_client.get(f'stop:{battle_conversation_id}'):
+                        #TODO:如果不加message_end消息的话，就什么都不用动，加的话，只要碰到end，都需要返回一条消息才可以。
+                        return
             except UnicodeDecodeError:
                 # 如果解码失败，跳过该块
                 continue

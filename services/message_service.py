@@ -2,6 +2,7 @@ import datetime
 import uuid
 from model.models import db,Message
 from sqlalchemy import select
+from dtos.response_utils import *
 class MessageService():
     def save_messages(self,message_id,is_think_message,time_consumed_on_thinking):
         '''
@@ -101,22 +102,21 @@ class MessageService():
         # 如果没有找到任何消息，返回空列表
         if not result:
             return []
-
         # 转换为字典列表
         messages_data = [
-            {
-                "id": str(message.id),
-                "conversation_id": "",
-                "inputs": {},
-                "query": message.query,
-                "message_files": [],
-                "answer": message.answer,
-                "parent_message_id": None,
-                "created_at": round(message.created_at.timestamp()),
-                "think_content":message.think_content,
-                "stage":4,
-                "time_consumed_on_thinking": message.time_consumed_on_thinking
-            }
+            MessageResponse(
+                id=str(message.id),
+                conversation_id="",
+                query=message.query,
+                message_files=[],
+                answer=message.answer,
+                parent_message_id=None,
+                created_at=round(message.created_at.timestamp()),
+                think_content=message.think_content,
+                stage=4,
+                time_consumed_on_thinking=message.time_consumed_on_thinking
+            
+            )
             for message in result
         ]
 
